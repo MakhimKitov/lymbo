@@ -21,15 +21,17 @@ type Kharon struct {
 }
 
 type Settings struct {
-	ProcessTime     time.Duration
-	MaxPollInterval time.Duration
-	MinPollInterval time.Duration
-	BatchSize       int
-	Workers         int
+	ProcessTime      time.Duration
+	MaxPollInterval  time.Duration
+	MinPollInterval  time.Duration
+	BatchSize        int
+	Workers          int
+	EnableExpiration bool
 }
 
 var MinPollIntervalDefault = 10 * time.Millisecond
 var MaxPollIntervalDefault = 15000 * time.Millisecond
+var ExpirationBatchSize = 100
 
 func NewKharon(store Store, s Settings, logger *slog.Logger) *Kharon {
 	if store == nil {
@@ -65,16 +67,17 @@ func NewKharon(store Store, s Settings, logger *slog.Logger) *Kharon {
 	}
 }
 
-func (k *Kharon) Done(tid TicketId, result any) error {
-	return k.store.Done(tid, result)
+func (k *Kharon) Done(tid TicketId, opts ...Option) error {
+	opts = append(opts, WithKeep())
+	return k.store.Ack(tid, opts...)
 }
 
-func (k *Kharon) Cancel(tid TicketId, reason any) error {
-	return k.store.Cancel(tid, reason)
+func (k *Kharon) Cancel(tid TicketId, opts ...Option) error {
+	return k.store.Cancel(tid, opts...)
 }
 
-func (k *Kharon) Fail(tid TicketId, reason any) error {
-	return k.store.Fail(tid, reason)
+func (k *Kharon) Fail(tid TicketId, opts ...Option) error {
+	return k.store.Fail(tid, opts...)
 }
 
 func (k *Kharon) Add(t Ticket) error {
@@ -98,7 +101,27 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 		go k.work(wctx, r)
 	}
 
-	sleepDuration := k.settings.MaxPollInterval
+	if k.settings.EnableExpiration {
+		go func() {
+			k.logger.InfoContext(ctx, "kharon: ticket expiration worker started")
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-wctx.Done():
+					return
+				case <-ticker.C:
+					err := k.store.ExpireTickets(ExpirationBatchSize, time.Now())
+					if err != nil {
+						k.logger.ErrorContext(ctx, "kharon: error expiring tickets", "error", err)
+					}
+					k.logger.InfoContext(ctx, "kharon: ticket expiration run completed")
+				}
+			}
+		}()
+	}
+
+	sleepDuration := k.settings.MinPollInterval
 	k.logger.InfoContext(ctx, "kharon started",
 		"workers", k.settings.Workers,
 		"min_poll_timeout", k.settings.MinPollInterval.String(),
@@ -111,7 +134,7 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(sleepDuration):
-			result, err := k.store.Poll(k.settings.BatchSize, time.Now(), k.settings.ProcessTime)
+			result, err := k.store.PollPending(k.settings.BatchSize, time.Now(), k.settings.ProcessTime)
 			if err != nil {
 				// This error is transient, we just log and continue
 				k.logger.ErrorContext(ctx, "kharon: error polling store", "error", err)

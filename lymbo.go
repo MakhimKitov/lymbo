@@ -4,20 +4,44 @@ import (
 	"time"
 )
 
-// Actually it should be a enum
-// Either we have tickets to process
-// Or we have to wait:
 type PollResult struct {
 	SleepUntil *time.Time // Can be nil, actually, meaning the store is empty
 	Tickets    []Ticket
+}
+
+type Option func(o *Opts)
+
+func WithExpireIn(ttl time.Duration) func(o *Opts) {
+	return func(o *Opts) {
+		o.ExpireIn = ttl
+	}
+}
+
+func WithKeep() func(o *Opts) {
+	return func(o *Opts) {
+		o.Keep = true
+	}
+}
+
+func WithErrorReason(reason any) func(o *Opts) {
+	return func(o *Opts) {
+		o.ErrorReason = reason
+	}
+}
+
+type Opts struct {
+	ExpireIn    time.Duration
+	Keep        bool
+	ErrorReason any
 }
 
 type Store interface {
 	Get(TicketId) (Ticket, error)
 	Add(Ticket) error
 	Delete(TicketId) error
-	Done(tid TicketId, result any) error
-	Cancel(tid TicketId, reason any) error
-	Fail(tid TicketId, reason any) error
-	Poll(batchSize int, now time.Time, blockFor time.Duration) (PollResult, error)
+	Ack(tid TicketId, opts ...Option) error
+	Cancel(tid TicketId, opts ...Option) error
+	Fail(tid TicketId, opts ...Option) error
+	PollPending(limit int, now time.Time, ttr time.Duration) (PollResult, error)
+	ExpireTickets(limit int, now time.Time) error
 }

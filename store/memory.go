@@ -13,6 +13,16 @@ import (
 )
 
 const MaxBackoffDelay = 15 * time.Second
+const (
+	secondsPerMinute       = 60
+	secondsPerHour         = 60 * secondsPerMinute
+	secondsPerDay          = 24 * secondsPerHour
+	unixToInternal   int64 = (1969*365 + 1969/4 - 1969/100 + 1969/400) * secondsPerDay
+	maxInt64         int64 = int64(^uint64(0) >> 1)
+	maxUnix          int64 = maxInt64 - unixToInternal
+)
+
+var maxDate = time.Unix(maxUnix, 0)
 
 type MemoryStore struct {
 	mu   sync.RWMutex
@@ -59,86 +69,87 @@ func (m *MemoryStore) Delete(id lymbo.TicketId) error {
 	return nil
 }
 
-func (m *MemoryStore) Done(tid lymbo.TicketId, result any) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// check that exists:
-	t, exists := m.data[tid]
-	if !exists {
-		return lymbo.ErrTicketNotFound
+func (m *MemoryStore) update(t *lymbo.Ticket, status status.Status, opts ...lymbo.Option) {
+	o := &lymbo.Opts{}
+	for _, opt := range opts {
+		opt(o)
 	}
 
-	if t.Status != status.Pending {
-		return errors.Join(
-			fmt.Errorf("invalid status transition from %s to %s", t.Status, status.Done),
-			lymbo.ErrInvalidStatusTransition,
-		)
-	}
-
-	t.Status = status.Done
+	t.Status = status
 	tm := time.Now()
 	t.Mtime = &tm
 
-	m.data[tid] = t
-
-	return nil
-}
-
-func (m *MemoryStore) Cancel(tid lymbo.TicketId, reason any) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// check that exists:
-	t, exists := m.data[tid]
-	if !exists {
-		return lymbo.ErrTicketNotFound
+	if o.ErrorReason != nil {
+		t.ErrorReason = o.ErrorReason
 	}
 
+	if o.ExpireIn > 0 {
+		t.Runat = tm.Add(o.ExpireIn)
+	} else {
+		t.Runat = maxDate
+	}
+
+	if o.Keep {
+		m.data[t.ID] = *t
+	} else {
+		delete(m.data, t.ID)
+	}
+}
+
+func (m *MemoryStore) lookupPending(tid lymbo.TicketId) (*lymbo.Ticket, error) {
+	t, exists := m.data[tid]
+	if !exists {
+		return nil, lymbo.ErrTicketNotFound
+	}
 	if t.Status != status.Pending {
-		return errors.Join(
-			fmt.Errorf("invalid status transition from %s to %s", t.Status, status.Cancelled),
+		return nil, errors.Join(
+			fmt.Errorf("ticket %s is not pending (status: %s)", tid, t.Status),
 			lymbo.ErrInvalidStatusTransition,
 		)
 	}
-
-	t.Status = status.Cancelled
-	t.ErrorReason = reason
-	tm := time.Now()
-	t.Mtime = &tm
-
-	m.data[tid] = t
-
-	return nil
+	return &t, nil
 }
 
-func (m *MemoryStore) Fail(tid lymbo.TicketId, reason any) error {
+func (m *MemoryStore) Ack(tid lymbo.TicketId, opts ...lymbo.Option) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// check that exists:
-	t, exists := m.data[tid]
-	if !exists {
-		return lymbo.ErrTicketNotFound
+	t, err := m.lookupPending(tid)
+	if err != nil {
+		return err
 	}
 
-	if t.Status != status.Pending {
-		return errors.Join(
-			fmt.Errorf("invalid status transition from %s to %s", t.Status, status.Failed),
-			lymbo.ErrInvalidStatusTransition,
-		)
-	}
-
-	t.Status = status.Failed
-	t.ErrorReason = reason
-	tm := time.Now()
-	t.Mtime = &tm
-	m.data[tid] = t
-
+	m.update(t, status.Done, opts...)
 	return nil
 }
 
-func (m *MemoryStore) Poll(limit int, now time.Time, blockFor time.Duration) (lymbo.PollResult, error) {
+func (m *MemoryStore) Cancel(tid lymbo.TicketId, opts ...lymbo.Option) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t, err := m.lookupPending(tid)
+	if err != nil {
+		return err
+	}
+
+	m.update(t, status.Cancelled, opts...)
+	return nil
+}
+
+func (m *MemoryStore) Fail(tid lymbo.TicketId, opts ...lymbo.Option) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t, err := m.lookupPending(tid)
+	if err != nil {
+		return err
+	}
+
+	m.update(t, status.Failed, opts...)
+	return nil
+}
+
+func (m *MemoryStore) PollPending(limit int, now time.Time, ttr time.Duration) (lymbo.PollResult, error) {
 	if limit <= 0 {
 		return lymbo.PollResult{
 			Tickets:    nil,
@@ -188,7 +199,7 @@ func (m *MemoryStore) Poll(limit int, now time.Time, blockFor time.Duration) (ly
 	for _, t := range ready {
 		delay := min(MaxBackoffDelay, time.Duration(math.Pow(1.5, float64(t.Attempts))))
 		// TODO: randomize delay a bit
-		delay += blockFor
+		delay += ttr
 		t.Runat = now.Add(delay)
 		t.Attempts += 1
 		m.data[t.ID] = t
@@ -198,4 +209,27 @@ func (m *MemoryStore) Poll(limit int, now time.Time, blockFor time.Duration) (ly
 		Tickets:    ready,
 		SleepUntil: nil,
 	}, nil
+}
+
+func (m *MemoryStore) ExpireTickets(limit int, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// The idea is simple, every "done", "cancelled" or "failed" ticket
+	// with runat older than now gets deleted
+	for tid, t := range m.data {
+		if limit <= 0 {
+			break
+		}
+		limit--
+		if t.Status == status.Pending {
+			continue
+		}
+		if t.Runat.After(now) {
+			continue
+		}
+		delete(m.data, tid)
+	}
+
+	return nil
 }

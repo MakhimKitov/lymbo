@@ -18,19 +18,21 @@ import (
 
 func main() {
 	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	slog.SetDefault(logger)
 
-	kh := lymbo.NewKharon(store.NewMemoryStore(), lymbo.Settings{}, nil)
+	kh := lymbo.NewKharon(store.NewMemoryStore(), lymbo.Settings{EnableExpiration: true}, logger)
 
 	r := lymbo.NewRouter()
 	r.HandleFunc("example", func(ctx context.Context, t lymbo.Ticket) error {
-		slog.InfoContext(ctx, "processing ticket", "ticket_id", t.ID, "payload", t.Payload)
+		slog.InfoContext(ctx, "processing ticket", "ticket_id", t.ID, "payload", t.Payload, "runat", t.Runat)
 		time.Sleep(100 * time.Millisecond) // Simulate work
-		return kh.Done(t.ID, nil)
+		return kh.Done(t.ID, lymbo.WithExpireIn(10*time.Second))
 	})
 
 	r.NotFoundFunc(func(ctx context.Context, t lymbo.Ticket) error {
 		slog.WarnContext(ctx, "unknown ticket type", "ticket_id", t.ID, "ticket_type", t.Type)
-		return kh.Fail(t.ID, "unsupported ticket type")
+		return kh.Fail(t.ID, lymbo.WithErrorReason("unsupported ticket type"))
 	})
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -87,7 +89,7 @@ func main() {
 		}
 
 		// Cancel ticket in store
-		err := kh.Cancel(lymbo.TicketId(id), "cancelled via API")
+		err := kh.Cancel(lymbo.TicketId(id), lymbo.WithErrorReason("cancelled via api"))
 		switch err {
 		case nil:
 			w.WriteHeader(http.StatusNoContent)
