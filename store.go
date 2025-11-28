@@ -39,12 +39,12 @@ type Store interface {
 	// Returns up to limit tickets sorted by priority (Runat, then Nice).
 	// The backoffBase parameter controls the exponential backoff calculation.
 	// Returns ErrLimitInvalid if limit <= 0.
-	PollPending(req PollRequest) (PollResult, error)
+	PollPending(context.Context, PollRequest) (PollResult, error)
 
 	// ExpireTickets removes expired tickets from the store.
 	// Only removes non-pending tickets where Runat is before now.
 	// Deletes up to limit tickets.
-	ExpireTickets(limit int, now time.Time) error
+	ExpireTickets(ctx context.Context, limit int, now time.Time) error
 }
 
 // PollResult contains the result of a store polling operation.

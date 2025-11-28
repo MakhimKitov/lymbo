@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/ochaton/lymbo"
 	"github.com/ochaton/lymbo/store"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
@@ -26,7 +29,23 @@ func main() {
 		WithWorkers(5).
 		WithBatchSize(5)
 
-	kh := lymbo.NewKharon(store.NewMemoryStore(), settings, logger)
+	var kh *lymbo.Kharon
+	dbtype := os.Getenv("DB_TYPE")
+	if dbtype == "" {
+		dbtype = "memory"
+	}
+	switch dbtype {
+	case "memory":
+		slog.InfoContext(ctx, "using in-memory storage")
+		kh = lymbo.NewKharon(store.NewMemoryStore(), settings, logger)
+	default:
+		pg, err := sql.Open(dbtype, os.Getenv("DB_DSN"))
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to connect to database", "error", err)
+			os.Exit(1)
+		}
+		kh = lymbo.NewKharon(store.NewPostgresStore(pg), settings, logger)
+	}
 
 	r := lymbo.NewRouter()
 	r.HandleFunc("example", func(ctx context.Context, t lymbo.Ticket) error {
@@ -90,6 +109,8 @@ func handleGetTicket(ctx context.Context, kh *lymbo.Kharon) http.HandlerFunc {
 			}
 		case lymbo.ErrTicketNotFound:
 			http.Error(w, "ticket not found", http.StatusNotFound)
+		case lymbo.ErrTicketIDInvalid:
+			http.Error(w, "invalid ticket ID", http.StatusBadRequest)
 		default:
 			slog.ErrorContext(ctx, "failed to get ticket", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -203,7 +224,15 @@ func handleCreateTicket(ctx context.Context, kh *lymbo.Kharon) http.HandlerFunc 
 			ticket = ticket.WithRunat(d)
 		}
 
-		if err := kh.Add(r.Context(), *ticket); err != nil {
+		err = kh.Add(r.Context(), *ticket)
+		switch err {
+		case nil:
+			break
+		case lymbo.ErrTicketIDInvalid:
+			slog.ErrorContext(ctx, "invalid ticket id", "error", err, "id", id)
+			http.Error(w, "invalid ticket ID", http.StatusBadRequest)
+			return
+		default:
 			slog.ErrorContext(ctx, "failed to add ticket", "error", err)
 			http.Error(w, "failed to add ticket", http.StatusInternalServerError)
 			return

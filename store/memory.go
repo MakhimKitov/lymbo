@@ -82,7 +82,7 @@ func (m *MemoryStore) Update(ctx context.Context, tid lymbo.TicketId, fn lymbo.U
 
 // PollPending retrieves pending tickets ready for processing.
 // It returns up to limit tickets that are ready to run, sorted by priority.
-func (m *MemoryStore) PollPending(req lymbo.PollRequest) (lymbo.PollResult, error) {
+func (m *MemoryStore) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.PollResult, error) {
 	if req.Limit <= 0 {
 		return lymbo.PollResult{}, lymbo.ErrLimitInvalid
 	}
@@ -144,7 +144,7 @@ func (m *MemoryStore) PollPending(req lymbo.PollRequest) (lymbo.PollResult, erro
 
 // ExpireTickets removes expired non-pending tickets from the store.
 // It deletes up to limit tickets that have expired (runat is before now).
-func (m *MemoryStore) ExpireTickets(limit int, now time.Time) error {
+func (m *MemoryStore) ExpireTickets(_ context.Context, limit int, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
