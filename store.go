@@ -7,6 +7,14 @@ import (
 
 type UpdateFunc func(context.Context, *Ticket) error
 
+type PollRequest struct {
+	Limit           int
+	Now             time.Time
+	TTR             time.Duration
+	BackoffBase     float64
+	MaxBackoffDelay time.Duration
+}
+
 // Store defines the interface for ticket storage and management.
 // Implementations must be safe for concurrent use.
 type Store interface {
@@ -29,8 +37,9 @@ type Store interface {
 
 	// PollPending retrieves pending tickets ready for processing.
 	// Returns up to limit tickets sorted by priority (Runat, then Nice).
+	// The backoffBase parameter controls the exponential backoff calculation.
 	// Returns ErrLimitInvalid if limit <= 0.
-	PollPending(limit int, now time.Time, ttr time.Duration, maxBackoffDelay time.Duration) (PollResult, error)
+	PollPending(req PollRequest) (PollResult, error)
 
 	// ExpireTickets removes expired tickets from the store.
 	// Only removes non-pending tickets where Runat is before now.
