@@ -55,52 +55,46 @@ type counter struct {
 }
 
 type stats struct {
-	added        *counter
-	polled       *counter
-	scheduled    *counter
-	acked        *counter
-	failed       *counter
-	done         *counter
-	retried      *counter
-	canceled     *counter
-	deleted      *counter
-	expired      *counter
-	processed    *counter
-	poll_time    *hist
-	process_time *hist
+	added     *counter
+	polled    *counter
+	scheduled *counter
+	acked     *counter
+	failed    *counter
+	done      *counter
+	retried   *counter
+	canceled  *counter
+	deleted   *counter
+	expired   *counter
+	processed *counter
 }
 
 type Stats struct {
-	Added       int64          `json:"added"`
-	Polled      int64          `json:"polled"`
-	Scheduled   int64          `json:"scheduled"`
-	Acked       int64          `json:"acked"`
-	Failed      int64          `json:"failed"`
-	Done        int64          `json:"done"`
-	Retried     int64          `json:"retried"`
-	Canceled    int64          `json:"canceled"`
-	Deleted     int64          `json:"deleted"`
-	Expired     int64          `json:"expired"`
-	Processed   int64          `json:"processed"`
-	PollTime    HistogramStats `json:"poll_time"`
-	ProcessTime HistogramStats `json:"process_time"`
+	Added     int64 `json:"added"`
+	Polled    int64 `json:"polled"`
+	Scheduled int64 `json:"scheduled"`
+	Acked     int64 `json:"acked"`
+	Failed    int64 `json:"failed"`
+	Done      int64 `json:"done"`
+	Retried   int64 `json:"retried"`
+	Canceled  int64 `json:"canceled"`
+	Deleted   int64 `json:"deleted"`
+	Expired   int64 `json:"expired"`
+	Processed int64 `json:"processed"`
 }
 
 func newStats() *stats {
 	return &stats{
-		added:        &counter{},
-		polled:       &counter{},
-		scheduled:    &counter{},
-		acked:        &counter{},
-		failed:       &counter{},
-		done:         &counter{},
-		retried:      &counter{},
-		canceled:     &counter{},
-		deleted:      &counter{},
-		expired:      &counter{},
-		processed:    &counter{},
-		poll_time:    newHist(),
-		process_time: newHist(),
+		added:     &counter{},
+		polled:    &counter{},
+		scheduled: &counter{},
+		acked:     &counter{},
+		failed:    &counter{},
+		done:      &counter{},
+		retried:   &counter{},
+		canceled:  &counter{},
+		deleted:   &counter{},
+		expired:   &counter{},
+		processed: &counter{},
 	}
 }
 
@@ -116,8 +110,6 @@ func (s *stats) reset() {
 	s.deleted.value = 0
 	s.expired.value = 0
 	s.processed.value = 0
-	s.poll_time.Reset()
-	s.process_time.Reset()
 }
 
 func (kh *Kharon) ResetStats() {
@@ -306,19 +298,17 @@ func (k *Kharon) Get(ctx context.Context, tid TicketId) (Ticket, error) {
 
 func (k *Kharon) Stats() Stats {
 	return Stats{
-		Added:       k.stats.added.value,
-		Polled:      k.stats.polled.value,
-		Scheduled:   k.stats.scheduled.value,
-		Acked:       k.stats.acked.value,
-		Failed:      k.stats.failed.value,
-		Done:        k.stats.done.value,
-		Retried:     k.stats.retried.value,
-		Canceled:    k.stats.canceled.value,
-		Deleted:     k.stats.deleted.value,
-		Expired:     k.stats.expired.value,
-		Processed:   k.stats.processed.value,
-		PollTime:    k.stats.poll_time.Collect().Stats(),
-		ProcessTime: k.stats.process_time.Collect().Stats(),
+		Added:     k.stats.added.value,
+		Polled:    k.stats.polled.value,
+		Scheduled: k.stats.scheduled.value,
+		Acked:     k.stats.acked.value,
+		Failed:    k.stats.failed.value,
+		Done:      k.stats.done.value,
+		Retried:   k.stats.retried.value,
+		Canceled:  k.stats.canceled.value,
+		Deleted:   k.stats.deleted.value,
+		Expired:   k.stats.expired.value,
+		Processed: k.stats.processed.value,
 	}
 }
 
@@ -347,7 +337,6 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 	)
 
 	sleepDuration := k.settings.maxReactionDelay
-	h := k.stats.poll_time
 	for {
 		select {
 		case <-ctx.Done():
@@ -360,7 +349,6 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 				default:
 				}
 
-				t := time.Now()
 				result, err := k.store.PollPending(ctx, PollRequest{
 					Limit:           k.settings.batchSize,
 					Now:             time.Now(),
@@ -373,8 +361,6 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 					sleepDuration = k.settings.maxReactionDelay
 					break
 				}
-
-				h.Observe(time.Since(t))
 
 				if result.SleepUntil != nil {
 					sleepDuration = time.Until(*result.SleepUntil)
@@ -439,9 +425,7 @@ func (k *Kharon) work(ctx context.Context, r *Router) {
 				continue
 			}
 
-			s := time.Now()
 			k.processTicket(ctx, r, t)
-			k.stats.process_time.Observe(time.Since(s))
 			k.stats.processed.value++
 		}
 	}

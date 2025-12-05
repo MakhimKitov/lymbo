@@ -104,16 +104,6 @@ func main() {
 					"processed", stats.Processed,
 					"failed", stats.Failed,
 					"expired", stats.Expired,
-					"poll_min", stats.PollTime.Min.Milliseconds(),
-					"poll_max", stats.PollTime.Max.Milliseconds(),
-					"poll_avg", stats.PollTime.Avg.Milliseconds(),
-					"poll_p99", stats.PollTime.P99.Milliseconds(),
-					"poll_p999", stats.PollTime.P999.Milliseconds(),
-					"proc_min", stats.ProcessTime.Min.Milliseconds(),
-					"proc_max", stats.ProcessTime.Max.Milliseconds(),
-					"proc_avg", stats.ProcessTime.Avg.Milliseconds(),
-					"proc_p99", stats.ProcessTime.P99.Milliseconds(),
-					"proc_p999", stats.ProcessTime.P999.Milliseconds(),
 				)
 				// Evaluate rates
 				interval := time.Since(ts).Seconds()
