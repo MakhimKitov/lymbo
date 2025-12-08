@@ -31,7 +31,7 @@ func main() {
 		WithProcessTime(100 * time.Microsecond).
 		WithWorkers(32).
 		WithBatchSize(32).
-		WithMinReactionDelay(100 * time.Microsecond).
+		WithMinReactionDelay(50 * time.Microsecond).
 		WithMaxReactionDelay(1 * time.Second)
 
 	var kh *lymbo.Kharon
