@@ -31,19 +31,9 @@ const (
 	// DefaultBackoffBase is the default base for exponential backoff calculation.
 	DefaultBackoffBase = 1.5
 
-	secondsPerMinute       = 60
-	secondsPerHour         = 60 * secondsPerMinute
-	secondsPerDay          = 24 * secondsPerHour
-	unixToInternal   int64 = (1969*365 + 1969/4 - 1969/100 + 1969/400) * secondsPerDay
-	maxInt64         int64 = int64(^uint64(0) >> 1)
-	maxUnix          int64 = maxInt64 - unixToInternal
+	// InfinityDelay is a duration representing an effectively infinite delay.
+	InfinityDelay time.Duration = 100 * 365 * 24 * time.Hour
 )
-
-type result struct {
-	tid  TicketId
-	s    status.Status
-	opts Opts
-}
 
 // Kharon is the main orchestrator for the job processing system.
 // It coordinates polling, dispatching, and processing of tickets.
@@ -52,71 +42,8 @@ type Kharon struct {
 	settings Settings
 	logger   *slog.Logger
 	income   chan *Ticket
-	outcome  chan *Ticket
 
 	stats *stats
-}
-
-type counter struct {
-	value int64
-}
-
-type stats struct {
-	added     *counter
-	polled    *counter
-	scheduled *counter
-	acked     *counter
-	failed    *counter
-	done      *counter
-	retried   *counter
-	canceled  *counter
-	deleted   *counter
-	expired   *counter
-	processed *counter
-}
-
-type Stats struct {
-	Added     int64 `json:"added"`
-	Polled    int64 `json:"polled"`
-	Scheduled int64 `json:"scheduled"`
-	Acked     int64 `json:"acked"`
-	Failed    int64 `json:"failed"`
-	Done      int64 `json:"done"`
-	Retried   int64 `json:"retried"`
-	Canceled  int64 `json:"canceled"`
-	Deleted   int64 `json:"deleted"`
-	Expired   int64 `json:"expired"`
-	Processed int64 `json:"processed"`
-}
-
-func newStats() *stats {
-	return &stats{
-		added:     &counter{},
-		polled:    &counter{},
-		scheduled: &counter{},
-		acked:     &counter{},
-		failed:    &counter{},
-		done:      &counter{},
-		retried:   &counter{},
-		canceled:  &counter{},
-		deleted:   &counter{},
-		expired:   &counter{},
-		processed: &counter{},
-	}
-}
-
-func (s *stats) reset() {
-	s.added.value = 0
-	s.polled.value = 0
-	s.scheduled.value = 0
-	s.acked.value = 0
-	s.failed.value = 0
-	s.done.value = 0
-	s.retried.value = 0
-	s.canceled.value = 0
-	s.deleted.value = 0
-	s.expired.value = 0
-	s.processed.value = 0
 }
 
 func (kh *Kharon) ResetStats() {
@@ -150,20 +77,17 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 	}
 }
 
-func applyOpts(ctx context.Context, t *Ticket, s status.Status, o *Opts) error {
-	t.Status = s
-	now := time.Now()
-	t.Mtime = &now
-	if o.delay > 0 || t.Status != status.Pending {
-		t.Runat = o.runat
-	}
+func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
+	t.Status = *o.status
+	t.Runat = time.Now().Add(o.delay)
 	if o.errorReason != nil {
 		t.ErrorReason = o.errorReason
-	} else {
-		t.ErrorReason = nil
 	}
 	if o.nice != nil {
 		t.Nice = *o.nice
+	}
+	if o.payload != nil {
+		t.Payload = o.payload
 	}
 	if o.update != nil {
 		if err := o.update(ctx, t); err != nil {
@@ -173,51 +97,42 @@ func applyOpts(ctx context.Context, t *Ticket, s status.Status, o *Opts) error {
 	return nil
 }
 
-func (k *Kharon) save(ctx context.Context, tid TicketId, s status.Status, o *Opts) error {
-	if o.update == nil {
-		// then we can do a simple update
-		pr := &o.runat
-		if s == status.Pending && o.delay == 0 {
-			// drop runat update
-			pr = nil
-		}
-		return k.store.UpdateSet(ctx, tid, UpdateSet{
-			Status:      &s,
-			Nice:        o.nice,
-			Runat:       pr,
-			Payload:     nil,
-			ErrorReason: o.errorReason,
+func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
+	if o.update != nil {
+		return k.store.Update(ctx, tid, func(ctx context.Context, t *Ticket) error {
+			return beforeUpdate(ctx, t, o)
 		})
 	}
-	return k.store.Update(ctx, tid, func(ctx context.Context, t *Ticket) error {
-		return applyOpts(ctx, t, s, o)
+
+	runat := time.Now().Add(o.delay)
+	return k.store.UpdateSet(ctx, tid, UpdateSet{
+		Status:      o.status,
+		Nice:        o.nice,
+		Runat:       &runat,
+		Payload:     o.payload,
+		ErrorReason: o.errorReason,
 	})
 }
 
-func toOpts(opts ...Option) *Opts {
-	o := &Opts{}
+func (k *Kharon) delete(ctx context.Context, tid TicketId) error {
+	// we should batch deletes, but for now...
+	return k.store.Delete(ctx, tid)
+}
+
+func toOpts(o *Opts, opts ...Option) *Opts {
 	for _, opt := range opts {
 		opt(o)
-	}
-	delay := o.delay
-	if delay == 0 {
-		delay = 100 * 365 * 24 * time.Hour // default to "infinity"
-	}
-	if o.runat.IsZero() {
-		o.runat = time.Now().Add(delay)
-	} else {
-		o.runat = o.runat.Add(delay)
 	}
 	return o
 }
 
 func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(opts...)
+	o := toOpts(&Opts{keep: false, status: &status.Done, delay: InfinityDelay}, opts...)
 	var err error
 	if o.keep {
-		err = k.save(ctx, tid, status.Done, o)
+		err = k.save(ctx, tid, o)
 	} else {
-		err = k.store.Delete(ctx, tid)
+		err = k.delete(ctx, tid)
 	}
 	if err != nil {
 		return err
@@ -229,9 +144,8 @@ func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
 // Done marks a ticket as successfully completed.
 // It automatically adds the WithKeep option to retain the ticket in the store.
 func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(opts...)
-	o.keep = true
-	if err := k.save(ctx, tid, status.Done, o); err != nil {
+	o := toOpts(&Opts{keep: true, status: &status.Done, delay: InfinityDelay}, opts...)
+	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
 	k.stats.done.value++
@@ -240,12 +154,12 @@ func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
 
 // Cancel marks a ticket as cancelled.
 func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(opts...)
+	o := toOpts(&Opts{keep: false, status: &status.Cancelled, delay: InfinityDelay}, opts...)
 	var err error
-	if !o.keep {
-		err = k.store.Delete(ctx, tid)
+	if o.keep {
+		err = k.save(ctx, tid, o)
 	} else {
-		err = k.save(ctx, tid, status.Cancelled, o)
+		err = k.delete(ctx, tid)
 	}
 	if err != nil {
 		return err
@@ -256,9 +170,8 @@ func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error
 
 // Fail marks a ticket as failed.
 func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(opts...)
-	o.keep = true
-	if err := k.save(ctx, tid, status.Failed, o); err != nil {
+	o := toOpts(&Opts{keep: true, status: &status.Failed, delay: InfinityDelay}, opts...)
+	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
 	k.stats.failed.value++
@@ -267,9 +180,9 @@ func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
 
 // Retry schedules a ticket for retry with updated parameters.
 func (k *Kharon) Retry(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(opts...)
-	o.keep = true
-	if err := k.save(ctx, tid, status.Pending, o); err != nil {
+	o := toOpts(&Opts{keep: true}, opts...)
+	// do not update status, it should be already 'pending'
+	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
 	k.stats.retried.value++
@@ -278,10 +191,8 @@ func (k *Kharon) Retry(ctx context.Context, tid TicketId, opts ...Option) error 
 
 // Put adds a new ticket to the store with configured options.
 func (k *Kharon) Put(ctx context.Context, t Ticket, opts ...Option) error {
-	o := toOpts(opts...)
-	o.keep = true
-	// Apply options to the ticket before adding.
-	if err := applyOpts(ctx, &t, status.Pending, o); err != nil {
+	o := toOpts(&Opts{keep: true, status: &status.Pending}, opts...)
+	if err := beforeUpdate(ctx, &t, o); err != nil {
 		return err
 	}
 	if err := k.store.Put(ctx, t); err != nil {
@@ -329,8 +240,29 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 	defer cancel()
 	defer close(k.income)
 
+	work := func(ctx context.Context) {
+		defer k.logger.DebugContext(ctx, "worker exiting")
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case t, ok := <-k.income:
+				if !ok {
+					return
+				}
+				if t == nil {
+					k.logger.WarnContext(ctx, "received nil ticket")
+					continue
+				}
+				k.processTicket(ctx, r, t)
+				k.stats.processed.value++
+			}
+		}
+	}
+
 	for range k.settings.workers {
-		go k.work(wctx, r)
+		go work(wctx)
 	}
 
 	if k.settings.enableExpiration {
@@ -413,29 +345,6 @@ func (k *Kharon) runExpirationWorker(ctx context.Context) {
 					k.logger.DebugContext(ctx, "ticket expiration run completed", "expired_count", n)
 				}
 			}
-		}
-	}
-}
-
-// work is the main worker loop that processes tickets from the bus.
-func (k *Kharon) work(ctx context.Context, r *Router) {
-	defer k.logger.DebugContext(ctx, "worker exiting")
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case t, ok := <-k.income:
-			if !ok {
-				return
-			}
-			if t == nil {
-				k.logger.WarnContext(ctx, "received nil ticket")
-				continue
-			}
-
-			k.processTicket(ctx, r, t)
-			k.stats.processed.value++
 		}
 	}
 }

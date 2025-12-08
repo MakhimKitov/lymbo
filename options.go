@@ -3,6 +3,8 @@ package lymbo
 import (
 	"context"
 	"time"
+
+	"github.com/ochaton/lymbo/status"
 )
 
 // Option is a functional option for configuring ticket operations.
@@ -13,8 +15,8 @@ type Opts struct {
 	// delay sets a delay before the ticket becomes eligible for processing.
 	delay time.Duration
 
-	// runat is evaluated from delay to set the ticket's Runat time.
-	runat time.Time
+	// status sets the ticket's status.
+	status *status.Status
 
 	// keep indicates whether to retain the ticket in the store after the operation.
 	// By default, completed/failed/cancelled tickets are removed.
@@ -25,6 +27,9 @@ type Opts struct {
 
 	// nice sets the ticket's nice value (priority).
 	nice *int
+
+	// payload sets the ticket's payload data.
+	payload any
 
 	// update allows custom modification of the ticket.
 	update func(ctx context.Context, t *Ticket) error
@@ -64,5 +69,11 @@ func WithNice(nice int) Option {
 func WithUpdate(update func(ctx context.Context, t *Ticket) error) Option {
 	return func(o *Opts) {
 		o.update = update
+	}
+}
+
+func WithPayload(payload any) Option {
+	return func(o *Opts) {
+		o.payload = payload
 	}
 }
