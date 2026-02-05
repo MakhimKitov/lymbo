@@ -87,7 +87,6 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 }
 
 func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
-	t.Status = *o.status
 	switch o.delay.how {
 	case delayFixed:
 		t.Runat = time.Now().Add(o.delay.fixed.duration)
@@ -98,6 +97,9 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 		t.Runat = time.Now().Add(delay)
 	default:
 		// no delay
+	}
+	if o.status != nil {
+		t.Status = *o.status
 	}
 	if o.errorReason != nil {
 		t.ErrorReason = o.errorReason
